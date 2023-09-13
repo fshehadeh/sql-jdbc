@@ -6,23 +6,29 @@
 
 package org.opensearch.jdbc.transport.http;
 
-import org.opensearch.jdbc.auth.AuthenticationType;
-import org.opensearch.jdbc.config.ConnectionConfig;
-import org.opensearch.jdbc.logging.Logger;
-import org.opensearch.jdbc.logging.LoggingSource;
-import org.opensearch.jdbc.transport.TransportException;
-import org.opensearch.jdbc.transport.http.auth.aws.AWSRequestSigningApacheInterceptor;
-import com.amazonaws.auth.AWS4Signer;
-import com.amazonaws.auth.AWSCredentialsProvider;
-import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
+import java.io.File;
+import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.security.KeyManagementException;
+import java.security.KeyStoreException;
+import java.security.NoSuchAlgorithmException;
+import java.security.UnrecoverableKeyException;
+import java.security.cert.CertificateException;
+
+import javax.net.ssl.HostnameVerifier;
+import javax.net.ssl.SSLContext;
+
 import org.apache.http.Header;
+import org.apache.http.HttpHost;
 import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.UsernamePasswordCredentials;
-import org.apache.http.client.CredentialsProvider;
+import org.apache.http.client.AuthCache;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.methods.HttpPost;
+import org.apache.http.client.protocol.HttpClientContext;
 import org.apache.http.client.utils.URIBuilder;
 import org.apache.http.config.Registry;
 import org.apache.http.config.RegistryBuilder;
@@ -34,26 +40,27 @@ import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
 import org.apache.http.conn.ssl.TrustSelfSignedStrategy;
 import org.apache.http.entity.ContentType;
 import org.apache.http.entity.StringEntity;
+import org.apache.http.impl.auth.BasicScheme;
+import org.apache.http.impl.client.BasicAuthCache;
 import org.apache.http.impl.client.BasicCredentialsProvider;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClientBuilder;
 import org.apache.http.impl.client.HttpClients;
 import org.apache.http.impl.conn.BasicHttpClientConnectionManager;
+import org.apache.http.protocol.HttpContext;
 import org.apache.http.ssl.SSLContextBuilder;
 import org.apache.http.ssl.SSLContexts;
 import org.apache.http.ssl.TrustStrategy;
+import org.opensearch.jdbc.auth.AuthenticationType;
+import org.opensearch.jdbc.config.ConnectionConfig;
+import org.opensearch.jdbc.logging.Logger;
+import org.opensearch.jdbc.logging.LoggingSource;
+import org.opensearch.jdbc.transport.TransportException;
+import org.opensearch.jdbc.transport.http.auth.aws.AWSRequestSigningApacheInterceptor;
 
-import javax.net.ssl.HostnameVerifier;
-import javax.net.ssl.SSLContext;
-import java.io.File;
-import java.io.IOException;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.security.KeyManagementException;
-import java.security.KeyStoreException;
-import java.security.NoSuchAlgorithmException;
-import java.security.UnrecoverableKeyException;
-import java.security.cert.CertificateException;
+import com.amazonaws.auth.AWS4Signer;
+import com.amazonaws.auth.AWSCredentialsProvider;
+import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
 
 public class ApacheHttpTransport implements HttpTransport, LoggingSource {
     String scheme;
@@ -64,6 +71,7 @@ public class ApacheHttpTransport implements HttpTransport, LoggingSource {
 
     private RequestConfig requestConfig;
     private CloseableHttpClient httpClient;
+	private BasicCredentialsProvider basicCredsProvider;
 
     public ApacheHttpTransport(ConnectionConfig connectionConfig, Logger log, String userAgent) throws TransportException {
         this.host = connectionConfig.getHost();
@@ -102,7 +110,7 @@ public class ApacheHttpTransport implements HttpTransport, LoggingSource {
 
         // setup authentication
         if (connectionConfig.getAuthenticationType() == AuthenticationType.BASIC) {
-            CredentialsProvider basicCredsProvider = new BasicCredentialsProvider();
+            this.basicCredsProvider = new BasicCredentialsProvider();
             basicCredsProvider.setCredentials(
                     AuthScope.ANY,
                     new UsernamePasswordCredentials(connectionConfig.getUser(), connectionConfig.getPassword()));
@@ -234,26 +242,38 @@ public class ApacheHttpTransport implements HttpTransport, LoggingSource {
         }
     }
 
+    private HttpContext context() {
+    	// create the auth cache, with basic scheme
+    	final AuthCache authCache = new BasicAuthCache();
+    	authCache.put(new HttpHost(host, port, scheme), new BasicScheme());
+
+    	// create a new context that uses the new auth cache and the credentials provider
+    	final HttpClientContext context = HttpClientContext.create();
+    	context.setCredentialsProvider(this.basicCredsProvider);
+    	context.setAuthCache(authCache);
+		return context;
+	}
+    
     private CloseableHttpResponse doGet(URI uri, Header[] headers, int readTimeout) throws TransportException {
         try {
             setReadTimeout(readTimeout);
             HttpGet request = new HttpGet(uri);
             request.setHeaders(headers);
             request.setConfig(getRequestConfig());
-            return httpClient.execute(request);
+            return httpClient.execute(request, context());
         } catch (IOException e) {
             throw new TransportException(e);
         }
     }
 
-    private CloseableHttpResponse doPost(URI uri, Header[] headers, String body, int readTimeout) throws TransportException {
+	private CloseableHttpResponse doPost(URI uri, Header[] headers, String body, int readTimeout) throws TransportException {
         try {
             setReadTimeout(readTimeout);
             HttpPost request = new HttpPost(uri);
             request.setHeaders(headers);
             request.setEntity(new StringEntity(body, ContentType.APPLICATION_JSON));
             request.setConfig(getRequestConfig());
-            return httpClient.execute(request);
+            return httpClient.execute(request, context());
         } catch (IOException e) {
             throw new TransportException(e);
         }

@@ -6,7 +6,7 @@
 
 package org.opensearch.jdbc.protocol.http;
 
-import org.opensearch.jdbc.protocol.JdbcQueryParam;;
+import org.opensearch.jdbc.protocol.JdbcQueryParam;
 import org.opensearch.jdbc.protocol.QueryRequest;
 
 
